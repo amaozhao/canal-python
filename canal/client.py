@@ -1,29 +1,29 @@
 #!/usr/bin/env python3
 
-import time
-import struct
+import asyncio
 from .connector import Connector
 from .protocol import CanalProtocol_pb2
 from .protocol import EntryProtocol_pb2
 
-class Client(object):
 
+class Client:
     def __init__(self):
         self.connector = Connector()
+        self.loop = asyncio.get_event_loop()
 
-    def connect(self, host='127.0.0.1', port=11111):
-        self.connector.connect(host, port)
-        data = self.connector.read_next_packet()
+    async def connect(self, host='127.0.0.1', port=11111):
+        await self.connector.connect(host, port)
+        data = await self.connector.read_next_packet()
         packet = CanalProtocol_pb2.Packet()
         packet.MergeFromString(data)
         if packet.type != CanalProtocol_pb2.PacketType.HANDSHAKE:
             raise Exception('connect error')
-        print('connected to %s:%s' % (host, port))
+        print(f'connected to {host}:{port}')
 
-    def disconnect(self):
-        self.connector.disconnect()
+    async def disconnect(self):
+        await self.connector.disconnect()
 
-    def check_valid(self, username=b'', password=b''):
+    async def check_valid(self, username=b'', password=b''):
         client_auth = CanalProtocol_pb2.ClientAuth()
         client_auth.username = username
         client_auth.password = password
@@ -31,10 +31,10 @@ class Client(object):
         packet = CanalProtocol_pb2.Packet()
         packet.type = CanalProtocol_pb2.PacketType.CLIENTAUTHENTICATION
         packet.body = client_auth.SerializeToString()
-        
-        self.connector.write_with_header(packet.SerializeToString())
 
-        data = self.connector.read_next_packet()
+        await self.connector.write_with_header(packet.SerializeToString())
+
+        data = await self.connector.read_next_packet()
         packet = CanalProtocol_pb2.Packet()
         packet.MergeFromString(data)
         if packet.type != CanalProtocol_pb2.PacketType.ACK:
@@ -43,14 +43,19 @@ class Client(object):
         ack = CanalProtocol_pb2.Ack()
         ack.MergeFromString(packet.body)
         if ack.error_code > 0:
-            raise Exception('something goes wrong when doing authentication. error code:%s, error message:%s' % (ack.error_code, ack.error_message))
+            raise Exception(
+                f'something goes wrong when doing authentication.'
+                f'error code:{ack.error_code},'
+                f'error message:{ack.error_message}'
+            )
         print('Auth succed')
 
-    def subscribe(self, client_id=b'1001', destination=b'example', filter=b'.*\\..*'):
+    async def subscribe(self, client_id=b'1001',
+                        destination=b'example', filter=b'.*\\..*'):
         self.client_id = client_id
         self.destination = destination
-        
-        self.rollback(0)
+
+        await self.rollback(0)
 
         sub = CanalProtocol_pb2.Sub()
         sub.destination = destination
@@ -60,10 +65,10 @@ class Client(object):
         packet = CanalProtocol_pb2.Packet()
         packet.type = CanalProtocol_pb2.PacketType.SUBSCRIPTION
         packet.body = sub.SerializeToString()
-        
-        self.connector.write_with_header(packet.SerializeToString())
 
-        data = self.connector.read_next_packet()
+        await self.connector.write_with_header(packet.SerializeToString())
+
+        data = await self.connector.read_next_packet()
         packet = CanalProtocol_pb2.Packet()
         packet.MergeFromString(data)
         if packet.type != CanalProtocol_pb2.PacketType.ACK:
@@ -72,18 +77,21 @@ class Client(object):
         ack = CanalProtocol_pb2.Ack()
         ack.MergeFromString(packet.body)
         if ack.error_code > 0:
-            raise Exception('Failed to subscribe. error code:%s, error message:%s' % (ack.error_code, ack.error_message))
+            raise Exception(
+                f'Failed to subscribe. error code:{ack.error_code},'
+                f'error message:{ack.error_message}'
+            )
         print('Subscribe succed')
 
-    def unsubscribe(self):
+    async def unsubscribe(self):
         pass
 
-    def get(self, size=100):
-        message = self.get_without_ack(size)
-        self.ack(message['id'])
+    async def get(self, size=100):
+        message = await self.get_without_ack(size)
+        await self.ack(message['id'])
         return message
 
-    def get_without_ack(self, batch_size=10, timeout=-1, unit=-1):
+    async def get_without_ack(self, batch_size=10, timeout=-1, unit=-1):
         get = CanalProtocol_pb2.Get()
         get.client_id = self.client_id
         get.destination = self.destination
@@ -96,9 +104,9 @@ class Client(object):
         packet.type = CanalProtocol_pb2.PacketType.GET
         packet.body = get.SerializeToString()
 
-        self.connector.write_with_header(packet.SerializeToString())
+        await self.connector.write_with_header(packet.SerializeToString())
 
-        data = self.connector.read_next_packet()
+        data = await self.connector.read_next_packet()
         packet = CanalProtocol_pb2.Packet()
         packet.MergeFromString(data)
 
@@ -113,16 +121,19 @@ class Client(object):
                     entry.MergeFromString(item)
                     message['entries'].append(entry)
         elif packet.type == CanalProtocol_pb2.PacketType.ACK:
-            ack = CanalProtocol_pb2.PacketType.Ack()
+            ack = CanalProtocol_pb2.Ack()
             ack.MergeFromString(packet.body)
             if ack.error_code > 0:
-                raise Exception('get data error. error code:%s, error message:%s' % (ack.error_code, ack.error_message))
+                raise Exception(
+                    f'get data error. error code:{ack.error_code},'
+                    f'error message:{ack.error_message}'
+                )
         else:
-            raise Exception('unexpected packet type:%s' % (packet.type))
+            raise Exception(f'unexpected packet type:{packet.type}')
 
         return message
 
-    def ack(self, message_id):
+    async def ack(self, message_id):
         if message_id:
             clientack = CanalProtocol_pb2.ClientAck()
             clientack.destination = self.destination
@@ -133,9 +144,9 @@ class Client(object):
             packet.type = CanalProtocol_pb2.PacketType.CLIENTACK
             packet.body = clientack.SerializeToString()
 
-            self.connector.write_with_header(packet.SerializeToString())
+            await self.connector.write_with_header(packet.SerializeToString())
 
-    def rollback(self, batch_id):
+    async def rollback(self, batch_id):
         cb = CanalProtocol_pb2.ClientRollback()
         cb.batch_id = batch_id
         cb.client_id = self.client_id
@@ -145,20 +156,23 @@ class Client(object):
         packet.type = CanalProtocol_pb2.PacketType.CLIENTROLLBACK
         packet.body = cb.SerializeToString()
 
-        self.connector.write_with_header(packet.SerializeToString())
+        await self.connector.write_with_header(packet.SerializeToString())
 
-if __name__ == "__main__":
+
+async def main():
     client = Client()
-    client.connect(host='172.12.0.13')
-    client.check_valid()
-    client.subscribe()
+    await client.connect(host='172.12.0.13')
+    await client.check_valid()
+    await client.subscribe()
 
     while True:
-        message = client.get(100)
+        message = await client.get(100)
         entries = message['entries']
         for entry in entries:
             entry_type = entry.entryType
-            if entry_type in [EntryProtocol_pb2.EntryType.TRANSACTIONBEGIN, EntryProtocol_pb2.EntryType.TRANSACTIONEND]:
+            if entry_type in [
+                    EntryProtocol_pb2.EntryType.TRANSACTIONBEGIN,
+                    EntryProtocol_pb2.EntryType.TRANSACTIONEND]:
                 continue
             row_change = EntryProtocol_pb2.RowChange()
             row_change.MergeFromString(entry.storeValue)
@@ -192,6 +206,10 @@ if __name__ == "__main__":
                     data=format_data,
                 )
                 print(data)
-        time.sleep(1)
+        await asyncio.sleep(1)
 
-    client.disconnect()
+    await client.disconnect()
+
+if __name__ == "__main__":
+    loop = asyncio.get_event_loop()
+    loop.run_until_complete(main())

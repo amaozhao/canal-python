@@ -3,45 +3,46 @@
 import socket
 import struct
 
-class Connector(object):
 
+class Connector:
     sock = None
     packet_len = 4
 
-    def connect(self, host, port, timeout=10):
+    async def connect(self, host, port, timeout=10):
         try:
             self.sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
             self.sock.settimeout(timeout)
-            self.sock.connect((host, port))
+            await self.loop.sock_connect(self.sock, (host, port))
             self.sock.settimeout(None)
         except socket.error as e:
-            print('Connect to server error: %s' % e)
+            print(f'Connect to server error: {e}')
             self.sock.close()
 
-    def disconnect(self):
+    async def disconnect(self):
         self.sock.close()
 
-    def read(self, length):
+    async def read(self, length):
         recv = b''
         while True:
-            buf = self.sock.recv(length)
+            buf = await self.loop.sock_recv(self.sock, length)
             if not buf:
                 raise Exception('TSocket: Could not read bytes from server')
             read_len = len(buf)
             if read_len < length:
-                recv = recv + buf
-                length = length - read_len
+                recv += buf
+                length -= read_len
             else:
                 return recv + buf
 
-    def write(self, buf):
+    async def write(self, buf):
         self.sock.sendall(buf)
+        await self.loop.sock_sendall(self.sock, buf)
 
-    def read_next_packet(self):
-        data = self.read(self.packet_len)
+    async def read_next_packet(self):
+        data = await self.read(self.packet_len)
         data_len = struct.unpack('>i', data)
-        return self.read(data_len[0])
+        return await self.read(data_len[0])
 
-    def write_with_header(self, data):
-        self.write(struct.pack('>i', len(data)))
-        self.write(data)
+    async def write_with_header(self, data):
+        await self.write(struct.pack('>i', len(data)))
+        await self.write(data)
